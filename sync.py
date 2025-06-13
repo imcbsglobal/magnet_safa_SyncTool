@@ -236,7 +236,7 @@ def sync_data_bulk_optimized(data, config):
 
         # Prepare complete payload
         payload = {
-            "database": config.get('target_database', 'SCHOOL'),
+            "database": config.get('target_database', 'safa'),
             "tables": data,
             "total_records": total_records,
             "sync_timestamp": datetime.now().isoformat()
