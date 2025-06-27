@@ -24,18 +24,30 @@ class DecimalEncoder(json.JSONEncoder):
         return super(DecimalEncoder, self).default(obj)
 
 
-# Setup logging with better formatting
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(message)s',
-    handlers=[
-        logging.FileHandler('sync.log', mode='w'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
-
-CONFIG_FILE = 'config.json'
+# Clear old logs and setup new logging
+def setup_logging():
+    """Clear old logs and setup fresh logging"""
+    log_file = 'sync.log'
+    
+    # Remove old log file if exists
+    if os.path.exists(log_file):
+        try:
+            os.remove(log_file)
+            print("🗑️  Cleared old sync log")
+        except:
+            pass
+    
+    # Setup logging with better formatting
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, mode='w'),
+            logging.StreamHandler(sys.stdout)
+        ],
+        force=True  # Force reconfiguration
+    )
+    return logging.getLogger(__name__)
 
 
 def print_header():
@@ -59,40 +71,67 @@ def print_progress_bar(current, total, prefix='Progress', bar_length=40):
 
 
 def load_config():
-    """Load configuration from config.json file"""
+    """Load minimal configuration from config.json file"""
+    CONFIG_FILE = 'config.json'
     try:
         print("📋 Loading configuration file...")
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
-        print("✅ Configuration loaded successfully\n")
+        
+        # Validate required fields
+        if 'dsn' not in config:
+            raise ValueError("Missing 'dsn' in config.json")
+        if 'api_url' not in config:
+            raise ValueError("Missing 'api_url' in config.json")
+            
+        print("✅ Configuration loaded successfully")
+        print(f"   → DSN: {config['dsn']}")
+        print(f"   → API URL: {config['api_url']}")
+        print()
         return config
     except FileNotFoundError:
-        print(f"❌ ERROR: Configuration file '{CONFIG_FILE}' not found!")
+        logger.info(f"❌ ERROR: Configuration file '{CONFIG_FILE}' not found!")
+        logger.info("📋 Expected format:")
+        logger.info('   {')
+        logger.info('     "dsn": "your_dsn_name",')
+        logger.info('     "api_url": "https://your-api-url.com"')
+        logger.info('   }')
         input("\nPress Enter to exit...")
         sys.exit(1)
-    except json.JSONDecodeError:
-        print(f"❌ ERROR: Invalid JSON format in '{CONFIG_FILE}'!")
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.info(f"❌ ERROR: Configuration error: {e}")
+        logger.info("📋 Expected format:")
+        logger.info('   {')
+        logger.info('     "dsn": "your_dsn_name",')
+        logger.info('     "api_url": "https://your-api-url.com"')
+        print('   }')
         input("\nPress Enter to exit...")
         sys.exit(1)
 
 
 def connect_to_database(config):
-    """Connect to SQL Anywhere database using ODBC"""
+    """Connect to SQL Anywhere database using ODBC with hardcoded credentials"""
     try:
         print("🔌 Connecting to database...")
-        dsn = config['database']['dsn']
-        username = config['database']['username']
-        password = config['database']['password']
-
+        
+        # Hardcoded database credentials
+        dsn = config['dsn']
+        username = "DBA"
+        password = "(*$^)"
+        
         print(f"   → DSN: {dsn}")
         print(f"   → User: {username}")
 
         conn_str = f"DSN={dsn};UID={username};PWD={password}"
         conn = pyodbc.connect(conn_str)
         print("✅ Database connection successful!\n")
+        
+        logger.info(f"Database connection established - DSN: {dsn}, User: {username}")
         return conn
     except pyodbc.Error as e:
-        print(f"❌ Database connection failed: {e}")
+        error_msg = f"Database connection failed: {e}"
+        print(f"❌ {error_msg}")
+        logger.error(error_msg)
         input("\nPress Enter to exit...")
         sys.exit(1)
 
@@ -108,6 +147,7 @@ def execute_query_with_progress(conn, query, table_name):
         total_count = cursor.fetchone()[0]
 
         print(f"   → Fetching {total_count:,} records from {table_name}...")
+        logger.info(f"Starting to fetch {total_count} records from {table_name}")
 
         # Execute main query
         cursor.execute(query)
@@ -133,10 +173,13 @@ def execute_query_with_progress(conn, query, table_name):
             print()  # New line after progress bar
 
         cursor.close()
+        logger.info(f"Successfully fetched {len(results)} records from {table_name}")
         return results
 
     except pyodbc.Error as e:
-        print(f"❌ Query execution failed for {table_name}: {e}")
+        error_msg = f"Query execution failed for {table_name}: {e}"
+        print(f"❌ {error_msg}")
+        logger.error(error_msg)
         return []
 
 
@@ -144,8 +187,9 @@ def fetch_data_parallel(conn):
     """Fetch data from all required tables using parallel processing"""
     print("📊 FETCHING DATA FROM DATABASE (OPTIMIZED)")
     print("-" * 50)
+    logger.info("Starting data fetch from database")
 
-    # Queries to fetch school data tables
+    # Hardcoded queries for required tables
     tables = [
         ("acc_users", 'SELECT "id", "pass" FROM "acc_users"'),
         ("personel", 'SELECT "admission", "name" FROM "personel"'),
@@ -161,8 +205,6 @@ def fetch_data_parallel(conn):
     data = {}
     total_records = 0
 
-    # For small datasets, use sequential processing
-    # For large datasets, this could be parallelized, but database connections are limited
     for i, (table_name, query) in enumerate(tables, 1):
         print(f"{i}. Processing {table_name}...")
 
@@ -179,9 +221,11 @@ def fetch_data_parallel(conn):
         total_records += record_count
 
         print(f"   ✅ {table_name}: {record_count:,} records loaded")
+        logger.info(f"Table {table_name}: {record_count} records loaded")
 
     print("-" * 50)
     print(f"📈 TOTAL RECORDS TO SYNC: {total_records:,}")
+    logger.info(f"Total records to sync: {total_records}")
     print()
 
     return data
@@ -190,8 +234,11 @@ def fetch_data_parallel(conn):
 def reset_sync_session(config):
     """Reset the sync session on the API server"""
     try:
-        api_base_url = config['api']['url']
+        api_base_url = config['api_url']
         reset_endpoint = f"{api_base_url}/api/reset-sync-session/"
+
+        print("🔄 Resetting sync session on server...")
+        logger.info(f"Sending reset request to: {reset_endpoint}")
 
         response = requests.post(reset_endpoint,
                                  headers={'Content-Type': 'application/json'},
@@ -199,20 +246,26 @@ def reset_sync_session(config):
 
         if response.status_code == 200:
             print("✅ Sync session reset on server")
+            logger.info("Sync session reset successful")
             return True
         else:
-            print("⚠️  Warning: Could not reset sync session on server")
+            warning_msg = f"Could not reset sync session on server (Status: {response.status_code})"
+            print(f"⚠️  Warning: {warning_msg}")
+            logger.warning(warning_msg)
             return False
     except Exception as e:
-        print(f"⚠️  Warning: Could not reset sync session: {e}")
+        warning_msg = f"Could not reset sync session: {e}"
+        print(f"⚠️  Warning: {warning_msg}")
+        logger.warning(warning_msg)
         return False
 
 
 def sync_data_bulk_optimized(data, config):
     """Optimized bulk sync - send all data in one request"""
     try:
-        api_base_url = config['api']['url']
+        api_base_url = config['api_url']
         print(f"🌐 API Server: {api_base_url}")
+        logger.info(f"Starting bulk sync to API server: {api_base_url}")
         print()
 
         # Reset sync session
@@ -229,35 +282,43 @@ def sync_data_bulk_optimized(data, config):
 
         print("📤 PREPARING BULK SYNC PAYLOAD")
         print("-" * 50)
+        logger.info("Preparing bulk sync payload")
 
         # Calculate total records
         total_records = sum(len(table_data) for table_data in data.values())
         print(f"📊 Total records to sync: {total_records:,}")
 
-        # Prepare complete payload
+        # Hardcoded target database and prepare payload
+        target_database = "safa"  # Hardcoded
         payload = {
-            "database": config.get('target_database', 'safa'),
+            "database": target_database,
             "tables": data,
             "total_records": total_records,
             "sync_timestamp": datetime.now().isoformat()
         }
 
         print("🔄 Serializing data to JSON...")
+        logger.info("Serializing data to JSON format")
         json_data = json.dumps(payload, cls=DecimalEncoder)
         data_size_mb = len(json_data.encode('utf-8')) / (1024 * 1024)
         print(f"📦 Payload size: {data_size_mb:.2f} MB")
+        logger.info(f"Payload size: {data_size_mb:.2f} MB")
 
         print("\n📤 SENDING BULK SYNC REQUEST")
         print("-" * 50)
         print("⏳ Uploading data to server...")
+        logger.info(f"Sending POST request to: {bulk_sync_endpoint}")
 
-        # Send request with longer timeout for large datasets
         # Dynamic timeout based on data size
         timeout = max(300, total_records // 1000 * 10)
+        logger.info(f"Request timeout set to: {timeout} seconds")
 
         start_time = time.time()
 
         try:
+            print("🌐 Establishing connection to server...")
+            logger.info("Making HTTP POST request to API server")
+            
             response = requests.post(
                 bulk_sync_endpoint,
                 data=json_data,
@@ -267,15 +328,21 @@ def sync_data_bulk_optimized(data, config):
 
             upload_time = time.time() - start_time
             print(f"⏱️  Upload completed in {upload_time:.2f} seconds")
+            logger.info(f"Server response received in {upload_time:.2f} seconds")
+            logger.info(f"Response status code: {response.status_code}")
 
             if response.status_code == 200:
+                print("📥 Processing server response...")
+                logger.info("Processing successful server response")
+                
                 response_data = response.json()
+                logger.info(f"Server response data: {response_data}")
+                
                 if response_data.get('success', False):
                     print("✅ BULK SYNC SUCCESSFUL!")
-                    print(
-                        f"📊 Total records processed: {response_data.get('total_records', 0):,}")
-                    print(
-                        f"📋 Tables processed: {response_data.get('tables_processed', 0)}")
+                    success_msg = f"Total records processed: {response_data.get('total_records', 0)}, Tables processed: {response_data.get('tables_processed', 0)}"
+                    print(f"📊 {success_msg}")
+                    logger.info(f"Bulk sync successful - {success_msg}")
 
                     # Show detailed results
                     results = response_data.get('results', {})
@@ -284,44 +351,61 @@ def sync_data_bulk_optimized(data, config):
                     for table_name, table_result in results.items():
                         records = table_result.get('records_processed', 0)
                         print(f"  {table_name}: {records:,} records")
+                        logger.info(f"Table {table_name}: {records} records processed")
 
                     return True
                 else:
-                    print(
-                        f"❌ API Error: {response_data.get('error', 'Unknown error')}")
+                    error_msg = response_data.get('error', 'Unknown error')
+                    print(f"❌ API Error: {error_msg}")
+                    logger.error(f"API returned error: {error_msg}")
+                    
                     if 'validation_errors' in response_data:
                         print("📋 Validation errors:")
-                        for error in response_data['validation_errors'][:5]:
-                            print(
-                                f"  Row {error.get('row', '?')}: {error.get('errors', {})}")
+                        validation_errors = response_data['validation_errors'][:5]
+                        logger.error(f"Validation errors: {validation_errors}")
+                        for error in validation_errors:
+                            print(f"  Row {error.get('row', '?')}: {error.get('errors', {})}")
                     return False
             else:
-                print(f"❌ HTTP Error: {response.status_code}")
+                error_msg = f"HTTP Error: {response.status_code}"
+                print(f"❌ {error_msg}")
+                logger.error(error_msg)
+                
                 try:
                     error_data = response.json()
                     print(f"📋 Error details: {error_data}")
+                    logger.error(f"Error response: {error_data}")
                 except:
-                    print(f"📋 Response text: {response.text[:500]}...")
+                    response_text = response.text[:500]
+                    print(f"📋 Response text: {response_text}...")
+                    logger.error(f"Error response text: {response_text}")
                 return False
 
         except requests.exceptions.Timeout:
-            print(f"⏰ Request timed out after {timeout} seconds")
+            timeout_msg = f"Request timed out after {timeout} seconds"
+            print(f"⏰ {timeout_msg}")
             print("💡 Suggestion: Try increasing timeout or reducing batch size")
+            logger.error(timeout_msg)
             return False
         except requests.exceptions.RequestException as e:
-            print(f"🌐 Network error: {str(e)}")
+            network_error = f"Network error: {str(e)}"
+            print(f"🌐 {network_error}")
+            logger.error(network_error)
             return False
 
     except Exception as e:
-        print(f"❌ Sync Error: {str(e)}")
+        sync_error = f"Sync Error: {str(e)}"
+        print(f"❌ {sync_error}")
+        logger.error(sync_error)
         return False
 
 
 def sync_data_to_api_legacy(data, config):
     """Legacy batch sync method - kept as fallback"""
     try:
-        api_base_url = config['api']['url']
+        api_base_url = config['api_url']
         print(f"🌐 API Server: {api_base_url} (Legacy Mode)")
+        logger.info(f"Starting legacy sync mode to: {api_base_url}")
         print()
 
         reset_sync_session(config)
@@ -329,14 +413,16 @@ def sync_data_to_api_legacy(data, config):
         headers = {'Content-Type': 'application/json'}
         sync_endpoint = f"{api_base_url}/api/sync/"
 
-        # Larger batch size for better performance
+        # Hardcoded batch size and target database
         BATCH_SIZE = 3000
+        target_database = "safa"
 
         tables_to_sync = ["acc_users", "personel",
                           "mag_subject", "cce_assessmentitems", "cce_entry"]
 
         print("📤 SYNCING DATA TO API (LEGACY MODE)")
         print("-" * 50)
+        logger.info("Starting legacy batch sync")
 
         def chunk_data(data_list, chunk_size=BATCH_SIZE):
             for i in range(0, len(data_list), chunk_size):
@@ -347,10 +433,11 @@ def sync_data_to_api_legacy(data, config):
                 table_data = data[table_name]
                 if not table_data:
                     print(f"{table_index}. {table_name}: No data to sync")
+                    logger.info(f"Table {table_name}: No data to sync")
                     continue
 
-                print(
-                    f"{table_index}. Syncing {len(table_data):,} records from {table_name}...")
+                print(f"{table_index}. Syncing {len(table_data):,} records from {table_name}...")
+                logger.info(f"Starting sync for table {table_name} with {len(table_data)} records")
 
                 chunks = list(chunk_data(table_data, chunk_size=BATCH_SIZE))
 
@@ -362,16 +449,19 @@ def sync_data_to_api_legacy(data, config):
                     is_last_batch = (chunk_index == len(chunks))
 
                     payload = {
-                        "database": config.get('target_database', 'SCHOOL'),
+                        "database": target_database,
                         "table": table_name,
                         "data": chunk,
                         "is_first_batch": is_first_batch,
                         "is_last_batch": is_last_batch
                     }
 
+                    logger.info(f"Sending batch {chunk_index}/{len(chunks)} for table {table_name}")
+
                     success = False
                     for retry in range(3):
                         try:
+                            logger.info(f"Attempt {retry + 1}/3 for batch {chunk_index}")
                             response = requests.post(
                                 sync_endpoint,
                                 data=json.dumps(payload, cls=DecimalEncoder),
@@ -379,49 +469,63 @@ def sync_data_to_api_legacy(data, config):
                                 timeout=180
                             )
 
+                            logger.info(f"Response status: {response.status_code}")
+
                             if response.status_code == 200:
                                 response_data = response.json()
                                 if response_data.get('success', False):
                                     success = True
+                                    logger.info(f"Batch {chunk_index} sent successfully")
                                     break
                                 else:
-                                    print(
-                                        f"\n   ⚠️  API Error: {response_data.get('error', 'Unknown error')}")
+                                    error_msg = response_data.get('error', 'Unknown error')
+                                    print(f"\n   ⚠️  API Error: {error_msg}")
+                                    logger.error(f"API error for batch {chunk_index}: {error_msg}")
                             else:
-                                print(
-                                    f"\n   ⚠️  Retry {retry + 1}/3 (Status: {response.status_code})")
+                                print(f"\n   ⚠️  Retry {retry + 1}/3 (Status: {response.status_code})")
+                                logger.warning(f"Retry {retry + 1}/3 - Status: {response.status_code}")
                                 time.sleep(2)
 
                         except Exception as e:
-                            print(
-                                f"\n   ⚠️  Retry {retry + 1}/3 (Error: {str(e)})")
+                            print(f"\n   ⚠️  Retry {retry + 1}/3 (Error: {str(e)})")
+                            logger.error(f"Retry {retry + 1}/3 - Error: {str(e)}")
                             time.sleep(2)
 
                     print_progress_bar(chunk_index, len(
                         chunks), f"   Batch {chunk_index}/{len(chunks)}")
 
                     if not success:
-                        print(
-                            f"\n❌ Failed to sync {table_name} after 3 attempts")
+                        error_msg = f"Failed to sync {table_name} after 3 attempts"
+                        print(f"\n❌ {error_msg}")
+                        logger.error(error_msg)
                         return False
 
-                print(
-                    f"   ✅ {table_name} synced successfully! (Total: {len(table_data):,} records)")
+                success_msg = f"{table_name} synced successfully! (Total: {len(table_data)} records)"
+                print(f"   ✅ {success_msg}")
+                logger.info(success_msg)
                 print()
 
         return True
 
     except Exception as e:
-        print(f"❌ Sync Error: {str(e)}")
+        sync_error = f"Legacy sync error: {str(e)}"
+        print(f"❌ {sync_error}")
+        logger.error(sync_error)
         return False
 
 
 def main():
     """Main function to run the optimized sync process"""
+    global logger
+    
     try:
         print_header()
 
-        # Load configuration
+        # Setup fresh logging
+        logger = setup_logging()
+        logger.info("=== SYNC SESSION STARTED ===")
+
+        # Load minimal configuration
         config = load_config()
 
         # Connect to database
@@ -433,24 +537,29 @@ def main():
         # Close database connection early to free resources
         conn.close()
         print("🔌 Database connection closed")
+        logger.info("Database connection closed")
         print()
 
         # Try optimized bulk sync first, fallback to legacy if needed
         print("🚀 Attempting optimized bulk sync...")
+        logger.info("Attempting optimized bulk sync")
         success = sync_data_bulk_optimized(data, config)
 
         if not success:
             print("\n⚠️  Bulk sync failed, trying legacy batch mode...")
+            logger.warning("Bulk sync failed, attempting legacy mode")
             success = sync_data_to_api_legacy(data, config)
 
         if success:
             print("=" * 70)
             print("           🎉 SYNC COMPLETED SUCCESSFULLY! 🎉")
             print("=" * 70)
-            print("✅ All school data has been synchronized to the web database")
-            print(
-                f"✅ Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            success_msg = "All school data has been synchronized to the web database"
+            print(f"✅ {success_msg}")
+            print(f"✅ Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             print("=" * 70)
+            logger.info("=== SYNC COMPLETED SUCCESSFULLY ===")
+            logger.info(success_msg)
             print()
             print("This window will close automatically in 5 seconds...")
 
@@ -462,6 +571,7 @@ def main():
             print("=" * 70)
             print("            ❌ SYNC FAILED! ❌")
             print("=" * 70)
+            error_msg = "Sync process failed - check logs for details"
             print("Please check the errors above and try again.")
             print("Common solutions:")
             print("• Check internet connection")
@@ -470,21 +580,27 @@ def main():
             print("• Verify database credentials are correct")
             print("• Try reducing batch size if timeout errors occur")
             print("=" * 70)
+            logger.error("=== SYNC FAILED ===")
+            logger.error(error_msg)
             print()
             input("Press Enter to close...")
             sys.exit(1)
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Sync cancelled by user")
+        logger.warning("Sync cancelled by user")
         input("Press Enter to close...")
         sys.exit(1)
     except Exception as e:
         print("\n" + "=" * 70)
         print("            💥 UNEXPECTED ERROR! 💥")
         print("=" * 70)
+        error_msg = f"Unexpected error: {str(e)}"
         print(f"Error: {str(e)}")
         print("\nPlease contact technical support with this error message.")
         print("=" * 70)
+        logger.error("=== UNEXPECTED ERROR ===")
+        logger.error(error_msg)
         input("\nPress Enter to close...")
         sys.exit(1)
 
